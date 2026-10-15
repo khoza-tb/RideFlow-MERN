@@ -2000,8 +2000,11 @@ function getDocumentUrl(documentPath) {
   if (typeof documentPath === "string" && documentPath.startsWith("http")) {
     return documentPath;
   }
-
-  const backendUrl = "http://localhost:5000";
+const backendUrl =
+  import.meta.env.VITE_BACKEND_URL ||
+  (import.meta.env.DEV
+    ? "http://localhost:5000"
+    : "https://rideflow-mern.onrender.com");
 
   if (typeof documentPath === "string" && documentPath.startsWith("/")) {
     return `${backendUrl}${documentPath}`;

@@ -1,31 +1,15 @@
 import { io } from "socket.io-client";
 
 const SOCKET_URL =
-  import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+  import.meta.env.VITE_BACKEND_URL ||
+  (import.meta.env.DEV
+    ? "http://localhost:5000"
+    : "https://rideflow-mern.onrender.com");
 
 const socket = io(SOCKET_URL, {
-  autoConnect: true,
+  autoConnect: false,
   withCredentials: true,
   transports: ["websocket", "polling"],
-  reconnection: true,
-  reconnectionAttempts: Infinity,
-  reconnectionDelay: 1000,
-  timeout: 10000,
-});
-
-socket.on("connect", () => {
-  console.log("🟢 RideFlow socket connected:", socket.id);
-});
-
-socket.on("disconnect", (reason) => {
-  console.log("🔴 RideFlow socket disconnected:", reason);
-});
-
-socket.on("connect_error", (error) => {
-  console.error(
-    "❌ RideFlow socket connection error:",
-    error.message
-  );
 });
 
 export default socket;

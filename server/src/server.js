@@ -1,3 +1,4 @@
+
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -31,136 +32,36 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
 
-const CLIENT_URL =
-  process.env.CLIENT_URL || "http://localhost:5173";
+// Supports one or more comma-separated frontend URLs.
+const allowedOrigins = [
+  "http://localhost:5173",
+  ...(process.env.CLIENT_URL || "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean),
+];
+
+// Render runs behind a reverse proxy.
+app.set("trust proxy", 1);
 
 // ===============================
-// SOCKET.IO
-// ===============================
-
-const io = new Server(server, {
-  cors: {
-    origin: CLIENT_URL,
-    credentials: true,
-    methods: [
-      "GET",
-      "POST",
-      "PUT",
-      "PATCH",
-      "DELETE",
-      "OPTIONS",
-    ],
-  },
-});
-
-app.set("io", io);
-
-// ===============================
-// SOCKET CONNECTION
-// ===============================
-
-io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
-
-  // =============================
-  // USER ROOM
-  // =============================
-
-  socket.on("join:user", (userId) => {
-    if (!userId) return;
-
-    socket.join(`user:${userId}`);
-
-    console.log(
-      `User ${userId} joined user:${userId}`
-    );
-  });
-
-  // =============================
-  // ADMIN ROOM
-  // =============================
-
-  socket.on("join:admin", () => {
-    socket.join("admins");
-
-    console.log(
-      `Admin joined admins room: ${socket.id}`
-    );
-  });
-
-  // =============================
-  // RIDE ROOM
-  // =============================
-
-  socket.on("join:ride", (rideId) => {
-    if (!rideId) return;
-
-    socket.join(`ride:${rideId}`);
-
-    console.log(
-      `Socket ${socket.id} joined ride:${rideId}`
-    );
-  });
-
-  // =============================
-  // DRIVER LIVE LOCATION
-  // =============================
-
-  socket.on("driver:location", (data) => {
-    const {
-      rideId,
-      driverId,
-      lat,
-      lng,
-    } = data || {};
-
-    // Validate location data
-    if (
-      !rideId ||
-      !driverId ||
-      lat == null ||
-      lng == null
-    ) {
-      return;
-    }
-
-    const locationData = {
-      rideId,
-      driverId,
-      lat: Number(lat),
-      lng: Number(lng),
-    };
-
-    // Send location to passenger
-    io.to(`ride:${rideId}`).emit(
-      "driver:location",
-      locationData
-    );
-
-    // Send location to admin fleet dashboard
-    io.to("admins").emit(
-      "driver:location",
-      locationData
-    );
-  });
-
-  // =============================
-  // DISCONNECT
-  // =============================
-
-  socket.on("disconnect", (reason) => {
-    console.log(
-      `Socket disconnected: ${socket.id} (${reason})`
-    );
-  });
-});
-
-// ===============================
-// CORS
+// CORS CONFIGURATION
 // ===============================
 
 const corsOptions = {
-  origin: CLIENT_URL,
+  origin(origin, callback) {
+    // Requests such as direct health checks may not send Origin.
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn("CORS blocked origin:", origin);
+
+    return callback(
+      new Error(`CORS blocked origin: ${origin}`)
+    );
+  },
+
   credentials: true,
 
   methods: [
@@ -178,16 +79,113 @@ const corsOptions = {
   ],
 };
 
-// IMPORTANT:
-// Do NOT use app.options("*", ...)
-// Newer Express/path-to-regexp versions
-// reject the "*" route pattern.
+// ===============================
+// SOCKET.IO
+// ===============================
+
+const io = new Server(server, {
+  cors: corsOptions,
+});
+
+app.set("io", io);
+
+// ===============================
+// SOCKET CONNECTION
+// ===============================
+
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
+
+  // USER ROOM
+  socket.on("join:user", (userId) => {
+    if (!userId) return;
+
+    socket.join(`user:${userId}`);
+
+    console.log(`User ${userId} joined user:${userId}`);
+  });
+
+  // ADMIN ROOM
+  socket.on("join:admin", () => {
+    socket.join("admins");
+
+    console.log(`Admin joined admins room: ${socket.id}`);
+  });
+
+  // RIDE ROOM
+  socket.on("join:ride", (rideId) => {
+    if (!rideId) return;
+
+    socket.join(`ride:${rideId}`);
+
+    console.log(`Socket ${socket.id} joined ride:${rideId}`);
+  });
+
+  // DRIVER LIVE LOCATION
+  socket.on("driver:location", (data) => {
+    const {
+      rideId,
+      driverId,
+      lat,
+      lng,
+    } = data || {};
+
+    if (
+      !rideId ||
+      !driverId ||
+      lat == null ||
+      lng == null
+    ) {
+      return;
+    }
+
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      return;
+    }
+
+    const locationData = {
+      rideId,
+      driverId,
+      lat: latitude,
+      lng: longitude,
+    };
+
+    // Notify passengers in this ride room.
+    io.to(`ride:${rideId}`).emit(
+      "driver:location",
+      locationData
+    );
+
+    // Notify connected admin dashboards.
+    io.to("admins").emit(
+      "driver:location",
+      locationData
+    );
+  });
+
+  // DISCONNECT
+  socket.on("disconnect", (reason) => {
+    console.log(
+      `Socket disconnected: ${socket.id} (${reason})`
+    );
+  });
+});
+
+// ===============================
+// EXPRESS MIDDLEWARE
+// ===============================
 
 app.use(cors(corsOptions));
-
-// ===============================
-// BODY PARSERS
-// ===============================
 
 app.use(
   express.json({
@@ -202,10 +200,6 @@ app.use(
   })
 );
 
-// ===============================
-// COOKIE PARSER
-// ===============================
-
 app.use(cookieParser());
 
 // ===============================
@@ -214,17 +208,8 @@ app.use(cookieParser());
 
 const uploadsPath = path.resolve("uploads");
 
-// Public uploads
-app.use(
-  "/uploads",
-  express.static(uploadsPath)
-);
-
-// API uploads
-app.use(
-  "/api/uploads",
-  express.static(uploadsPath)
-);
+app.use("/uploads", express.static(uploadsPath));
+app.use("/api/uploads", express.static(uploadsPath));
 
 // ===============================
 // HEALTH CHECK
@@ -244,11 +229,8 @@ app.get("/api/health", (req, res) => {
 // ===============================
 
 app.use("/api/auth", auth);
-
 app.use("/api/rides", rides);
-
 app.use("/api/drivers", drivers);
-
 app.use("/api/admin", admin);
 
 // ===============================
@@ -267,15 +249,8 @@ app.use((req, res) => {
 // ===============================
 
 app.use((err, req, res, next) => {
-  console.error("");
-  console.error("================================");
-  console.error("          SERVER ERROR");
-  console.error("================================");
-  console.error(err);
-  console.error("================================");
-  console.error("");
+  console.error("SERVER ERROR:", err);
 
-  // Multer error
   if (err?.name === "MulterError") {
     return res.status(400).json({
       success: false,
@@ -284,10 +259,16 @@ app.use((err, req, res, next) => {
     });
   }
 
+  if (err?.message?.startsWith("CORS blocked origin:")) {
+    return res.status(403).json({
+      success: false,
+      message: "Origin is not allowed by CORS",
+    });
+  }
+
   res.status(err.status || 500).json({
     success: false,
-    message:
-      err.message || "Internal server error",
+    message: err.message || "Internal server error",
   });
 });
 
@@ -297,72 +278,29 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
-    // =============================
-    // CHECK MONGO URI
-    // =============================
-
     if (!process.env.MONGO_URI) {
-      throw new Error(
-        "MONGO_URI is missing from .env"
-      );
+      throw new Error("MONGO_URI is missing from .env");
     }
 
-    console.log("");
     console.log("Connecting to MongoDB...");
 
-    // =============================
-    // CONNECT MONGODB
-    // =============================
+    await mongoose.connect(process.env.MONGO_URI);
 
-    await mongoose.connect(
-      process.env.MONGO_URI
-    );
+    console.log("MongoDB connected successfully");
 
-    console.log(
-      "MongoDB connected successfully"
-    );
-
-    // =============================
-    // START SERVER
-    // =============================
-
-    server.listen(PORT, () => {
-      console.log("");
+    server.listen(PORT, "0.0.0.0", () => {
       console.log("================================");
       console.log("          RIDEFLOW SERVER");
       console.log("================================");
-      console.log(
-        `API:    http://localhost:${PORT}`
-      );
-      console.log(
-        `Client: ${CLIENT_URL}`
-      );
-      console.log(
-        `Health: http://localhost:${PORT}/api/health`
-      );
-      console.log(
-        `Uploads: http://localhost:${PORT}/uploads`
-      );
+      console.log(`Port: ${PORT}`);
+      console.log(`Allowed clients: ${allowedOrigins.join(", ")}`);
+      console.log(`Health: /api/health`);
       console.log("================================");
-      console.log("");
     });
-
   } catch (error) {
-    console.error("");
-    console.error(
-      "MongoDB connection failed:"
-    );
-    console.error(
-      error.message
-    );
-    console.error("");
-
+    console.error("Failed to start RideFlow:", error.message);
     process.exit(1);
   }
 }
-
-// ===============================
-// START RIDEFLOW
-// ===============================
 
 startServer();
