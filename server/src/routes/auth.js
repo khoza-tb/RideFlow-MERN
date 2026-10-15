@@ -19,10 +19,13 @@ const r = Router();
    COOKIE CONFIGURATION
 ========================================================= */
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const cookieOptions = {
   httpOnly: true,
-  sameSite: "lax",
-  secure: process.env.NODE_ENV === "production",
+  sameSite: isProduction ? "none" : "lax",
+  secure: isProduction,
+  path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
@@ -73,10 +76,7 @@ r.post(
         registration,
       } = req.body;
 
-      /* -----------------------------------------------
-         BASIC VALIDATION
-      ------------------------------------------------ */
-
+      // BASIC VALIDATION
       if (!name || !email || !password) {
         return res.status(400).json({
           message: "Name, email and password are required.",
@@ -100,10 +100,7 @@ r.post(
         .trim()
         .toLowerCase();
 
-      /* -----------------------------------------------
-         CHECK EXISTING USER
-      ------------------------------------------------ */
-
+      // CHECK EXISTING USER
       const existingUser = await User.findOne({
         email: normalizedEmail,
       });
@@ -114,10 +111,7 @@ r.post(
         });
       }
 
-      /* -----------------------------------------------
-         DRIVER DOCUMENT VALIDATION
-      ------------------------------------------------ */
-
+      // DRIVER DOCUMENT VALIDATION
       if (
         role === "driver" &&
         (
@@ -131,15 +125,8 @@ r.post(
         });
       }
 
-      /* -----------------------------------------------
-         CREATE USER
-         
-         IMPORTANT:
-         User.js hashes the password in its pre-save hook.
-         Pass the original password here.
-         Do not hash it manually a second time.
-      ------------------------------------------------ */
-
+      // CREATE USER
+      // User.js handles password hashing.
       const u = await User.create({
         name: String(name).trim(),
         email: normalizedEmail,
@@ -148,10 +135,7 @@ r.post(
         role,
       });
 
-      /* -----------------------------------------------
-         CREATE DRIVER PROFILE
-      ------------------------------------------------ */
-
+      // CREATE DRIVER PROFILE
       if (role === "driver") {
         await Driver.create({
           user: u._id,
@@ -169,10 +153,7 @@ r.post(
         });
       }
 
-      /* -----------------------------------------------
-         LOGIN AFTER REGISTRATION
-      ------------------------------------------------ */
-
+      // LOGIN AFTER REGISTRATION
       return send(res, u);
     } catch (e) {
       console.error("REGISTER ERROR:", e);
@@ -208,20 +189,12 @@ r.post("/login", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------
-       FIND USER
-    ------------------------------------------------ */
-
+    // FIND USER
     const u = await User.findOne({
       email,
     });
 
-    /* -----------------------------------------------
-       VERIFY PASSWORD
-       
-       Use the comparison method from User.js.
-    ------------------------------------------------ */
-
+    // VERIFY PASSWORD
     if (
       !u ||
       !(await u.comparePassword(password))
@@ -231,10 +204,7 @@ r.post("/login", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------
-       LOGIN SUCCESS
-    ------------------------------------------------ */
-
+    // LOGIN SUCCESS
     return send(res, u);
   } catch (e) {
     console.error("LOGIN ERROR:", e);
@@ -288,8 +258,9 @@ r.get("/me", auth, async (req, res) => {
 r.post("/logout", (_, res) => {
   res.clearCookie("access_token", {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    sameSite: isProduction ? "none" : "lax",
+    secure: isProduction,
+    path: "/",
   });
 
   return res.json({
@@ -325,10 +296,7 @@ r.post("/forgot-password", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------
-       GENERATE SECURE RESET TOKEN
-    ------------------------------------------------ */
-
+    // GENERATE SECURE RESET TOKEN
     const token = crypto
       .randomBytes(32)
       .toString("hex");
@@ -346,10 +314,7 @@ r.post("/forgot-password", async (req, res) => {
 
     await u.save();
 
-    /* -----------------------------------------------
-       CREATE RESET URL
-    ------------------------------------------------ */
-
+    // CREATE RESET URL
     const clientUrl =
       process.env.CLIENT_URL ||
       "http://localhost:5173";
@@ -357,11 +322,8 @@ r.post("/forgot-password", async (req, res) => {
     const resetUrl =
       `${clientUrl}/reset-password/${token}`;
 
-    /* -----------------------------------------------
-       DEVELOPMENT LOG
-    ------------------------------------------------ */
-
-    if (process.env.NODE_ENV !== "production") {
+    // DEVELOPMENT LOG
+    if (!isProduction) {
       console.log(
         "\n========================================"
       );
@@ -385,7 +347,7 @@ r.post("/forgot-password", async (req, res) => {
     };
 
     // Never expose reset links in production responses.
-    if (process.env.NODE_ENV !== "production") {
+    if (!isProduction) {
       response.devResetUrl = resetUrl;
     }
 
@@ -409,10 +371,7 @@ r.post("/reset-password/:token", async (req, res) => {
 
     const password = String(req.body.password || "");
 
-    /* -----------------------------------------------
-       VALIDATE TOKEN AND PASSWORD
-    ------------------------------------------------ */
-
+    // VALIDATE TOKEN AND PASSWORD
     if (!token) {
       return res.status(400).json({
         message: "Invalid password reset link.",
@@ -425,19 +384,13 @@ r.post("/reset-password/:token", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------
-       HASH RESET TOKEN FOR DATABASE LOOKUP
-    ------------------------------------------------ */
-
+    // HASH RESET TOKEN FOR DATABASE LOOKUP
     const hashedToken = crypto
       .createHash("sha256")
       .update(token)
       .digest("hex");
 
-    /* -----------------------------------------------
-       FIND VALID RESET TOKEN
-    ------------------------------------------------ */
-
+    // FIND VALID RESET TOKEN
     const u = await User.findOne({
       resetToken: hashedToken,
       resetExpires: {
@@ -451,28 +404,14 @@ r.post("/reset-password/:token", async (req, res) => {
       });
     }
 
-    /* -----------------------------------------------
-       UPDATE PASSWORD
-       
-       IMPORTANT:
-       Assign the plain password.
-       User.js hashes it when save() runs.
-    ------------------------------------------------ */
-
+    // User.js hashes the password when save() runs.
     u.password = password;
 
-    /* -----------------------------------------------
-       INVALIDATE RESET TOKEN
-    ------------------------------------------------ */
-
+    // INVALIDATE RESET TOKEN
     u.resetToken = "";
     u.resetExpires = null;
 
     await u.save();
-
-    /* -----------------------------------------------
-       SUCCESS
-    ------------------------------------------------ */
 
     return res.json({
       message:
