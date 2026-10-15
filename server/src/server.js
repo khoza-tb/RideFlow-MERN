@@ -32,16 +32,27 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
 
-// Supports one or more comma-separated frontend URLs.
+// Normalize URLs to avoid mismatches caused by trailing slashes.
+function normalizeOrigin(value) {
+  return value.trim().replace(/\/+$/, "");
+}
+
+// Explicit production frontend URL plus any additional URLs
+// configured in Render's CLIENT_URL environment variable.
+const configuredOrigins = (process.env.CLIENT_URL || "")
+  .split(",")
+  .map(normalizeOrigin)
+  .filter(Boolean);
+
 const allowedOrigins = [
+  "https://rideflow-mern-1.onrender.com",
   "http://localhost:5173",
-  ...(process.env.CLIENT_URL || "")
-    .split(",")
-    .map((url) => url.trim())
-    .filter(Boolean),
+  "http://localhost:5174",
+  ...configuredOrigins,
 ];
 
-// Render runs behind a reverse proxy.
+const uniqueAllowedOrigins = [...new Set(allowedOrigins)];
+
 app.set("trust proxy", 1);
 
 // ===============================
@@ -50,8 +61,15 @@ app.set("trust proxy", 1);
 
 const corsOptions = {
   origin(origin, callback) {
-    // Requests such as direct health checks may not send Origin.
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Allow requests without an Origin header, such as
+    // direct health checks and certain server-to-server calls.
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const normalizedOrigin = normalizeOrigin(origin);
+
+    if (uniqueAllowedOrigins.includes(normalizedOrigin)) {
       return callback(null, true);
     }
 
@@ -77,7 +95,31 @@ const corsOptions = {
     "Content-Type",
     "Authorization",
   ],
+
+  optionsSuccessStatus: 204,
 };
+
+// Apply CORS before routes and other request handlers.
+app.use(cors(corsOptions));
+
+// ===============================
+// EXPRESS MIDDLEWARE
+// ===============================
+
+app.use(
+  express.json({
+    limit: "10mb",
+  })
+);
+
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "10mb",
+  })
+);
+
+app.use(cookieParser());
 
 // ===============================
 // SOCKET.IO
@@ -160,7 +202,7 @@ io.on("connection", (socket) => {
       lng: longitude,
     };
 
-    // Notify passengers in this ride room.
+    // Notify passengers in the ride room.
     io.to(`ride:${rideId}`).emit(
       "driver:location",
       locationData
@@ -180,27 +222,6 @@ io.on("connection", (socket) => {
     );
   });
 });
-
-// ===============================
-// EXPRESS MIDDLEWARE
-// ===============================
-
-app.use(cors(corsOptions));
-
-app.use(
-  express.json({
-    limit: "10mb",
-  })
-);
-
-app.use(
-  express.urlencoded({
-    extended: true,
-    limit: "10mb",
-  })
-);
-
-app.use(cookieParser());
 
 // ===============================
 // UPLOADS
@@ -279,7 +300,7 @@ app.use((err, req, res, next) => {
 async function startServer() {
   try {
     if (!process.env.MONGO_URI) {
-      throw new Error("MONGO_URI is missing from .env");
+      throw new Error("MONGO_URI is missing from environment variables");
     }
 
     console.log("Connecting to MongoDB...");
@@ -293,8 +314,11 @@ async function startServer() {
       console.log("          RIDEFLOW SERVER");
       console.log("================================");
       console.log(`Port: ${PORT}`);
-      console.log(`Allowed clients: ${allowedOrigins.join(", ")}`);
-      console.log(`Health: /api/health`);
+      console.log(
+        `Allowed clients: ${uniqueAllowedOrigins.join(", ")}`
+      );
+      console.log("Credentials: enabled");
+      console.log("Health: /api/health");
       console.log("================================");
     });
   } catch (error) {
