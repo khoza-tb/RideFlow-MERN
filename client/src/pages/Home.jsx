@@ -322,7 +322,7 @@ export default function Home() {
 
           <div>
             <b>2×</b>
-            <span>fare after 21:00</span>
+            <span>fare after 19:00</span>
           </div>
 
           <div>
