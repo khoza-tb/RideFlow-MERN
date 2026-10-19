@@ -35,11 +35,7 @@ const cookieOptions = {
 
 const send = (res, user) => {
   return res
-    .cookie(
-      "access_token",
-      signUser(user),
-      cookieOptions
-    )
+    .cookie("access_token", signUser(user), cookieOptions)
     .json({
       user: publicUser(user),
     });
@@ -76,7 +72,6 @@ r.post(
         registration,
       } = req.body;
 
-      // BASIC VALIDATION
       if (!name || !email || !password) {
         return res.status(400).json({
           message: "Name, email and password are required.",
@@ -100,7 +95,6 @@ r.post(
         .trim()
         .toLowerCase();
 
-      // CHECK EXISTING USER
       const existingUser = await User.findOne({
         email: normalizedEmail,
       });
@@ -111,7 +105,6 @@ r.post(
         });
       }
 
-      // DRIVER DOCUMENT VALIDATION
       if (
         role === "driver" &&
         (
@@ -125,7 +118,6 @@ r.post(
         });
       }
 
-      // CREATE USER
       // User.js handles password hashing.
       const u = await User.create({
         name: String(name).trim(),
@@ -135,7 +127,6 @@ r.post(
         role,
       });
 
-      // CREATE DRIVER PROFILE
       if (role === "driver") {
         await Driver.create({
           user: u._id,
@@ -144,16 +135,13 @@ r.post(
           vehicleModel,
           vehicleColor,
           registration,
-
           idDocument:
             `/uploads/${req.files.idDocument[0].filename}`,
-
           licenseDocument:
             `/uploads/${req.files.licenseDocument[0].filename}`,
         });
       }
 
-      // LOGIN AFTER REGISTRATION
       return send(res, u);
     } catch (e) {
       console.error("REGISTER ERROR:", e);
@@ -189,22 +177,14 @@ r.post("/login", async (req, res) => {
       });
     }
 
-    // FIND USER
-    const u = await User.findOne({
-      email,
-    });
+    const u = await User.findOne({ email });
 
-    // VERIFY PASSWORD
-    if (
-      !u ||
-      !(await u.comparePassword(password))
-    ) {
+    if (!u || !(await u.comparePassword(password))) {
       return res.status(401).json({
         message: "Invalid email or password.",
       });
     }
 
-    // LOGIN SUCCESS
     return send(res, u);
   } catch (e) {
     console.error("LOGIN ERROR:", e);
@@ -233,9 +213,7 @@ r.get("/me", auth, async (req, res) => {
 
     const driver =
       u.role === "driver"
-        ? await Driver.findOne({
-            user: u._id,
-          })
+        ? await Driver.findOne({ user: u._id })
         : null;
 
     return res.json({
@@ -272,10 +250,6 @@ r.post("/logout", (_, res) => {
    FORGOT PASSWORD
 ========================================================= */
 
-/* =========================================================
-   FORGOT PASSWORD + RESET PASSWORD
-========================================================= */
-
 r.post("/forgot-password", async (req, res) => {
   try {
     const email = String(req.body.email || "")
@@ -288,23 +262,28 @@ r.post("/forgot-password", async (req, res) => {
       });
     }
 
+    // Use a generic response so account existence isn't disclosed.
     const genericMessage =
       "If that email exists, password recovery instructions have been created.";
 
     const user = await User.findOne({ email });
 
-    // Do not reveal whether an account exists.
     if (!user) {
-      return res.json({ message: genericMessage });
+      return res.json({
+        message: genericMessage,
+      });
     }
 
     const isDevelopment =
       process.env.NODE_ENV === "development";
 
-    // Production requires email configuration.
+    // Production requires a configured email provider.
     if (
       !isDevelopment &&
-      (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM)
+      (
+        !process.env.RESEND_API_KEY ||
+        !process.env.EMAIL_FROM
+      )
     ) {
       console.error(
         "Password recovery unavailable: email service is not configured."
@@ -316,7 +295,7 @@ r.post("/forgot-password", async (req, res) => {
       });
     }
 
-    // Generate a secure, single-use token.
+    // Generate a cryptographically secure reset token.
     const token = crypto.randomBytes(32).toString("hex");
 
     const hashedToken = crypto
@@ -324,12 +303,30 @@ r.post("/forgot-password", async (req, res) => {
       .update(token)
       .digest("hex");
 
-    user.resetToken = hashedToken;
-    user.resetExpires = new Date(
+    const resetExpires = new Date(
       Date.now() + 15 * 60 * 1000
     );
 
-    await user.save();
+    /*
+     * Update only the reset fields.
+     * This avoids validating unrelated required fields,
+     * such as name, on the entire existing User document.
+     */
+    const updateResult = await User.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          resetToken: hashedToken,
+          resetExpires,
+        },
+      }
+    );
+
+    if (updateResult.matchedCount === 0) {
+      return res.status(404).json({
+        message: "Unable to process this recovery request.",
+      });
+    }
 
     const clientUrl = (
       process.env.CLIENT_URL || "http://localhost:5173"
@@ -338,7 +335,7 @@ r.post("/forgot-password", async (req, res) => {
     const resetUrl =
       `${clientUrl}/reset-password/${token}`;
 
-    // LOCAL DEVELOPMENT: no email provider required.
+    // LOCAL DEVELOPMENT: return a reset URL for testing.
     if (isDevelopment) {
       console.log("Development password reset URL:", resetUrl);
 
@@ -357,8 +354,10 @@ r.post("/forgot-password", async (req, res) => {
         <p>Use the link below to reset your RideFlow password.</p>
         <p>This link expires in 15 minutes and can only be used once.</p>
         <p>
-          <a href="${resetUrl}"
-             style="display:inline-block;background:#2563eb;color:white;padding:12px 20px;text-decoration:none;border-radius:8px;">
+          <a
+            href="${resetUrl}"
+            style="display:inline-block;background:#2563eb;color:white;padding:12px 20px;text-decoration:none;border-radius:8px;"
+          >
             Reset my password
           </a>
         </p>
@@ -379,7 +378,9 @@ r.post("/forgot-password", async (req, res) => {
           to: [email],
           subject: "Reset your RideFlow password",
           html: emailHtml,
-          text: `Reset your RideFlow password using this link: ${resetUrl}\nThis link expires in 15 minutes.`,
+          text:
+            `Reset your RideFlow password using this link: ${resetUrl}\n` +
+            "This link expires in 15 minutes.",
         }),
       }
     );
@@ -393,9 +394,19 @@ r.post("/forgot-password", async (req, res) => {
         details
       );
 
-      user.resetToken = "";
-      user.resetExpires = null;
-      await user.save();
+      // Invalidate the reset token if the email could not be sent.
+      await User.updateOne(
+        {
+          _id: user._id,
+          resetToken: hashedToken,
+        },
+        {
+          $set: {
+            resetToken: "",
+            resetExpires: null,
+          },
+        }
+      );
 
       return res.status(503).json({
         message:
@@ -403,7 +414,9 @@ r.post("/forgot-password", async (req, res) => {
       });
     }
 
-    return res.json({ message: genericMessage });
+    return res.json({
+      message: genericMessage,
+    });
   } catch (error) {
     console.error("FORGOT PASSWORD ERROR:", error);
 
@@ -450,12 +463,21 @@ r.post("/reset-password/:token", async (req, res) => {
       });
     }
 
-    // User.js should hash the password when saved.
+    /*
+     * Keep save() here so the User model's password-hashing
+     * pre-save middleware can run.
+     *
+     * validateBeforeSave:false skips full-document validation
+     * for legacy records missing unrelated required fields.
+     * It does not intentionally disable save middleware.
+     */
     user.password = password;
     user.resetToken = "";
     user.resetExpires = null;
 
-    await user.save();
+    await user.save({
+      validateBeforeSave: false,
+    });
 
     return res.json({
       message:
