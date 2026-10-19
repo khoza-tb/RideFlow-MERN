@@ -272,6 +272,10 @@ r.post("/logout", (_, res) => {
    FORGOT PASSWORD
 ========================================================= */
 
+/* =========================================================
+   FORGOT PASSWORD + RESET PASSWORD
+========================================================= */
+
 r.post("/forgot-password", async (req, res) => {
   try {
     const email = String(req.body.email || "")
@@ -284,76 +288,124 @@ r.post("/forgot-password", async (req, res) => {
       });
     }
 
-    const u = await User.findOne({
-      email,
-    });
+    const genericMessage =
+      "If that email exists, password recovery instructions have been created.";
 
-    // Avoid revealing whether an account exists.
-    if (!u) {
-      return res.json({
+    const user = await User.findOne({ email });
+
+    // Do not reveal whether an account exists.
+    if (!user) {
+      return res.json({ message: genericMessage });
+    }
+
+    const isDevelopment =
+      process.env.NODE_ENV === "development";
+
+    // Production requires email configuration.
+    if (
+      !isDevelopment &&
+      (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM)
+    ) {
+      console.error(
+        "Password recovery unavailable: email service is not configured."
+      );
+
+      return res.status(503).json({
         message:
-          "If that email exists, reset instructions have been created.",
+          "Password recovery is temporarily unavailable. Please try again later.",
       });
     }
 
-    // GENERATE SECURE RESET TOKEN
-    const token = crypto
-      .randomBytes(32)
-      .toString("hex");
+    // Generate a secure, single-use token.
+    const token = crypto.randomBytes(32).toString("hex");
 
     const hashedToken = crypto
       .createHash("sha256")
       .update(token)
       .digest("hex");
 
-    u.resetToken = hashedToken;
-
-    u.resetExpires = new Date(
+    user.resetToken = hashedToken;
+    user.resetExpires = new Date(
       Date.now() + 15 * 60 * 1000
     );
 
-    await u.save();
+    await user.save();
 
-    // CREATE RESET URL
-    const clientUrl =
-      process.env.CLIENT_URL ||
-      "http://localhost:5173";
+    const clientUrl = (
+      process.env.CLIENT_URL || "http://localhost:5173"
+    ).replace(/\/+$/, "");
 
     const resetUrl =
       `${clientUrl}/reset-password/${token}`;
 
-    // DEVELOPMENT LOG
-    if (!isProduction) {
-      console.log(
-        "\n========================================"
-      );
+    // LOCAL DEVELOPMENT: no email provider required.
+    if (isDevelopment) {
+      console.log("Development password reset URL:", resetUrl);
 
-      console.log("RIDEFLOW PASSWORD RESET");
-      console.log("Email:", email);
-      console.log("Reset URL:", resetUrl);
-      console.log(
-        "Expires:",
-        u.resetExpires.toISOString()
-      );
-
-      console.log(
-        "========================================\n"
-      );
+      return res.json({
+        message:
+          "Reset link created. This development link expires in 15 minutes.",
+        devResetUrl: resetUrl,
+      });
     }
 
-    const response = {
-      message:
-        "If that email exists, reset instructions have been created.",
-    };
+    // PRODUCTION: send the reset email through Resend.
+    const emailHtml = `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;">
+        <h1 style="color:#2563eb;">RideFlow</h1>
+        <h2>Reset your password</h2>
+        <p>Use the link below to reset your RideFlow password.</p>
+        <p>This link expires in 15 minutes and can only be used once.</p>
+        <p>
+          <a href="${resetUrl}"
+             style="display:inline-block;background:#2563eb;color:white;padding:12px 20px;text-decoration:none;border-radius:8px;">
+            Reset my password
+          </a>
+        </p>
+        <p>If you did not request this, you can ignore this email.</p>
+      </div>
+    `;
 
-    // Never expose reset links in production responses.
-    if (!isProduction) {
-      response.devResetUrl = resetUrl;
+    const emailResponse = await fetch(
+      "https://api.resend.com/emails",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: process.env.EMAIL_FROM,
+          to: [email],
+          subject: "Reset your RideFlow password",
+          html: emailHtml,
+          text: `Reset your RideFlow password using this link: ${resetUrl}\nThis link expires in 15 minutes.`,
+        }),
+      }
+    );
+
+    if (!emailResponse.ok) {
+      const details = await emailResponse.text();
+
+      console.error(
+        "Resend password email error:",
+        emailResponse.status,
+        details
+      );
+
+      user.resetToken = "";
+      user.resetExpires = null;
+      await user.save();
+
+      return res.status(503).json({
+        message:
+          "Unable to send reset instructions right now. Please try again later.",
+      });
     }
 
-    return res.json(response);
-  } catch (e) {
-    console.error("FORGOT PASSWORD ERROR:", e);
+    return res.json({ message: genericMessage });
+  } catch (error) {
+    console.error("FORGOT PASSWORD ERROR:", error);
 
     return res.status(500).json({
       message: "Unable to process password reset request.",
@@ -367,14 +419,12 @@ r.post("/forgot-password", async (req, res) => {
 
 r.post("/reset-password/:token", async (req, res) => {
   try {
-    const token = String(req.params.token || "").trim();
-
+    const { token } = req.params;
     const password = String(req.body.password || "");
 
-    // VALIDATE TOKEN AND PASSWORD
     if (!token) {
       return res.status(400).json({
-        message: "Invalid password reset link.",
+        message: "Password reset token is required.",
       });
     }
 
@@ -384,44 +434,38 @@ r.post("/reset-password/:token", async (req, res) => {
       });
     }
 
-    // HASH RESET TOKEN FOR DATABASE LOOKUP
     const hashedToken = crypto
       .createHash("sha256")
       .update(token)
       .digest("hex");
 
-    // FIND VALID RESET TOKEN
-    const u = await User.findOne({
+    const user = await User.findOne({
       resetToken: hashedToken,
-      resetExpires: {
-        $gt: new Date(),
-      },
+      resetExpires: { $gt: new Date() },
     });
 
-    if (!u) {
+    if (!user) {
       return res.status(400).json({
-        message: "This reset link is invalid or expired.",
+        message: "This reset link is invalid or has expired.",
       });
     }
 
-    // User.js hashes the password when save() runs.
-    u.password = password;
+    // User.js should hash the password when saved.
+    user.password = password;
+    user.resetToken = "";
+    user.resetExpires = null;
 
-    // INVALIDATE RESET TOKEN
-    u.resetToken = "";
-    u.resetExpires = null;
-
-    await u.save();
+    await user.save();
 
     return res.json({
       message:
-        "Password reset successful. You can sign in now.",
+        "Password reset successfully. You can now sign in with your new password.",
     });
-  } catch (e) {
-    console.error("RESET PASSWORD ERROR:", e);
+  } catch (error) {
+    console.error("RESET PASSWORD ERROR:", error);
 
     return res.status(500).json({
-      message: "Unable to reset password.",
+      message: "Unable to reset your password.",
     });
   }
 });
